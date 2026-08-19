@@ -82,6 +82,115 @@ NAVER 크롤러 저장소 개발 시작.
 
 ---
 
+## 2026-08-19 — 로컬 실행 환경 실검증 (Windows / Python 3.13.4)
+
+### 요청
+GitHub `main`을 pull 하고, 실제로 테스트를 실행하고, 결과를 기록해서 GitHub에 업로드.
+
+### 확인
+- `git pull --ff-only origin main` → `78af92f..78cb157` fast-forward
+- 이전 세션이 남긴 "실서비스 NAVER HTTP 호출 미검증" 상태를 그대로 인계받음
+- 실행 환경: Windows 11, Python 3.13.4, 외부 네트워크 접근 가능 (이전 샌드박스의 DNS 제한 없음)
+
+### 변경
+소스 변경 없음. 검증 실행과 결과 기록만 수행.
+
+### 테스트
+
+설치:
+
+```bash
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -e ".[dev]"
+# Successfully installed ... naver-craw-0.1.0 pytest-8.4.2 requests-2.34.2 beautifulsoup4-4.15.0
+```
+
+단위 테스트 — **PASS**:
+
+```text
+....s...                                                                 [100%]
+SKIPPED [1] tests\test_live.py:8: set NAVER_LIVE_TEST=1 to run against the live NAVER service
+7 passed, 1 skipped in 0.30s
+```
+
+실서비스 NAVER smoke test — **PASS (최초 실행 성공)**:
+
+```text
+$ NAVER_LIVE_TEST=1 pytest -q tests/test_live.py -rs
+.                                                                        [100%]
+1 passed in 1.46s
+```
+
+실제 HTTP 응답 확인:
+
+```text
+HTTP: 200 | content length: 733,337 bytes
+Content-Type: text/html; charset=UTF-8
+r.encoding: UTF-8 / r.apparent_encoding: utf-8
+```
+
+### 결과
+
+**실서비스 HTTP 연결은 검증 완료. 그러나 파서 출력 품질은 불합격입니다.**
+
+`where=blog`, `query=아이폰17` 실제 응답 파싱 결과 26건 중 호스트 분포:
+
+```text
+m.naver.com       19   ← 검색 결과가 아닌 쇼츠/동영상 링크 (잡음)
+blog.naver.com     5
+cafe.naver.com     2
+```
+
+확인된 결함 3건:
+
+1. **`_is_naver_content_url()` 호스트 필터 오작동 (HIGH)**
+   `parser.py:25-28`의 `"m."` prefix 조건이 `m.blog.naver.com`뿐 아니라 `m.naver.com` 자체를 통과시킵니다.
+   그 결과 전체 결과의 **73%(19/26)**가 검색 결과가 아닌 `m.naver.com/shorts?...` 동영상 링크입니다.
+   또한 `or` / `and` 우선순위상 `host in _ALLOWED_HOSTS or (endswith and any(startswith))`로 평가되어
+   의도한 화이트리스트가 사실상 무력화되어 있습니다.
+
+2. **title에 접근성 텍스트가 섞임 (HIGH)**
+   컨테이너 안의 모든 `a[href]`를 수집하기 때문에 링크 내부 숨김 텍스트 `"새 창 열림"`이 제목에 붙습니다.
+
+   ```text
+   "아이폰17 프로 자급제 가격 스펙 카메라 장점 새 창 열림"
+   "새 창 열림"                       ← 제목이 통째로 접근성 텍스트인 경우
+   ```
+
+   `where=news`는 더 심각해서 10건 중 9건의 제목이 기사 제목이 아닌 `"네이버뉴스 새 창 열림"`입니다.
+
+3. **`--type` 옵션이 실제로 영역을 분리하지 못함 (MEDIUM)**
+   `where=blog`와 `where=nexearch`의 파싱 결과가 26건/잡음 19건으로 **완전히 동일**합니다.
+   현재 파라미터 조합으로는 블로그 탭 전용 결과를 받아오지 못하고 있습니다.
+
+4. **라이브 테스트의 단언이 너무 약함 (HIGH)**
+   `tests/test_live.py`는 `assert results`와 `url.startswith("http")`만 확인하므로
+   위 잡음 데이터에도 **그대로 통과**합니다. 녹색 신호가 품질을 보증하지 못하는 상태입니다.
+
+인코딩은 문제 없음을 확인했습니다. `apparent_encoding`과 `utf-8` 강제 시 파싱 결과가 동일하며,
+CLI 콘솔 출력에서 보이는 깨짐은 Windows 콘솔 코드페이지 문제이지 코드 결함이 아닙니다.
+
+검증 상태 요약:
+
+```text
+설치(pip install -e '.[dev]')        : PASS
+단위 테스트 (7건)                     : PASS
+실서비스 NAVER HTTP 200 수신          : PASS  ← 최초 검증 완료
+응답 인코딩 (UTF-8)                   : PASS
+파서 추출 정확도                      : FAIL (잡음 73%, 제목 오염)
+검색 영역(--type) 분리                : FAIL (blog == nexearch)
+```
+
+### 다음 작업
+1. `_is_naver_content_url()` 화이트리스트를 명시적 host set 단일 조건으로 수정하고 `m.naver.com` 제외
+2. 제목 추출을 anchor 전체 텍스트가 아닌 제목 요소 기준으로 변경, `"새 창 열림"` 등 접근성 텍스트 제거
+3. 실제 응답 HTML을 fixture로 보존하고 위 결함에 대한 회귀 테스트 추가 (현재 fixture는 인위적 HTML)
+4. `where=blog` 전용 결과를 받기 위한 실제 요청 파라미터 재확인
+5. `tests/test_live.py` 단언 강화 — 허용 호스트 검증, 접근성 텍스트 미포함 검증
+6. 이후 pagination / 저장소 / SEO 분석 진행
+
+---
+
 ## 작업 기록 규칙
 
 새 AI는 기존 기록을 지우지 말고 아래 형식으로 새 항목을 추가합니다.

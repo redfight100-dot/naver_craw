@@ -124,17 +124,43 @@ div.api_txt_lines
 - 빈 검색어 검증
 - 잘못된 검색 영역 검증
 
-### 실제 NAVER HTTP 호출
+### 실제 NAVER HTTP 호출 — 검증 완료
 
-현재 ChatGPT 샌드박스에서 직접 실행한 NAVER 요청은 DNS/외부 네트워크 제한으로 실패했습니다.
-
-실패 형태:
+2026-08-19 Windows / Python 3.13.4 로컬 환경(외부 네트워크 허용)에서 최초로 실행에 성공했습니다.
+이전 기록에 있던 샌드박스 DNS 제한(`NameResolutionError: Failed to resolve 'search.naver.com'`)은
+해당 환경 한정 문제였으며 코드 결함이 아니었습니다.
 
 ```text
-NameResolutionError: Failed to resolve 'search.naver.com'
+$ NAVER_LIVE_TEST=1 pytest -q tests/test_live.py -rs
+1 passed in 1.46s
+
+HTTP: 200 | content length: 733,337 bytes
+Content-Type: text/html; charset=UTF-8
 ```
 
-따라서 **실서비스 NAVER HTTP 성공은 아직 검증되지 않았습니다.** 이를 성공했다고 기록하거나 주장하면 안 됩니다.
+인코딩도 정상입니다. `apparent_encoding`과 `utf-8` 강제 파싱 결과가 동일합니다.
+
+### 파서 정확도 — 검증 실패
+
+실서비스 응답 기준으로 파서 출력은 아직 사용 가능한 품질이 아닙니다.
+`where=blog`, `query=아이폰17` 결과 26건의 호스트 분포:
+
+```text
+m.naver.com       19   ← 검색 결과가 아닌 쇼츠/동영상 링크 (잡음 73%)
+blog.naver.com     5
+cafe.naver.com     2
+```
+
+확인된 결함:
+
+1. `parser.py`의 `_is_naver_content_url()`이 `"m."` prefix 때문에 `m.naver.com`을 통과시킵니다.
+   `or`/`and` 우선순위 문제로 `_ALLOWED_HOSTS` 화이트리스트가 사실상 무력화되어 있습니다.
+2. 제목에 링크 내부 접근성 텍스트 `"새 창 열림"`이 섞여 들어옵니다.
+   `where=news`는 10건 중 9건의 제목이 `"네이버뉴스 새 창 열림"`으로 기사 제목이 아닙니다.
+3. `where=blog`와 `where=nexearch`의 결과가 완전히 동일합니다. `--type` 옵션이 실제 영역 분리를 못 합니다.
+4. `tests/test_live.py`의 단언이 약해서(`assert results` 수준) 위 잡음 데이터에도 통과합니다.
+
+상세 근거는 `docs/AI_WORKLOG.md`의 2026-08-19 로컬 실검증 항목을 참조하십시오.
 
 ### 검색 결과 구조에 대한 외부 확인
 
@@ -203,16 +229,25 @@ NAVER_LIVE_TEST=1
 
 ## 8. 다음 우선순위
 
-### P0 — 실서비스 smoke test
+### P0 — 실서비스 smoke test (완료)
 
-외부 네트워크가 허용된 실행 환경에서:
+2026-08-19 실행 성공. HTTP 200 수신 및 단위 테스트 7건 PASS 확인.
 
 ```bash
 pip install -e '.[dev]'
 NAVER_LIVE_TEST=1 pytest -q tests/test_live.py -rs
 ```
 
-성공하면 실제 응답 HTML을 fixture로 보존하고 parser 결과를 검토합니다.
+### P0 — parser 정확도 수정 (신규, 최우선)
+
+실서비스 검증에서 드러난 결함을 먼저 해결해야 합니다.
+
+1. `_is_naver_content_url()`을 명시적 host set 단일 조건으로 수정하고 `m.naver.com`을 제외
+2. 제목을 anchor 전체 텍스트가 아닌 제목 요소 기준으로 추출하고 접근성 텍스트 제거
+3. 실제 응답 HTML을 fixture로 보존하고 위 결함에 대한 회귀 테스트 추가
+   (현재 `tests/fixtures/naver_search.html`은 인위적으로 작성된 HTML이라 실제 결함을 잡지 못했습니다)
+4. `tests/test_live.py` 단언 강화 — 허용 호스트 검증, 접근성 텍스트 미포함 검증
+5. `where=blog` 전용 결과를 받기 위한 실제 요청 파라미터 재확인
 
 ### P1 — 서비스별 parser
 
