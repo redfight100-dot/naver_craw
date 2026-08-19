@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "naver-craw"
+version = "0.1.0"
+description = "A small Python toolkit for normalized NAVER search crawling."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "requests>=2.32,<3",
+]
+
+[project.scripts]
+naver-craw = "naver_craw.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
